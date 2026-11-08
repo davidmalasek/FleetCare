@@ -100,6 +100,18 @@ export function UploadDialog({
                       ? `STK načtena z PDF, platnost do ${date(stk.fields.stkUntil)}.`
                       : stk.error || "STK uložena.",
                   );
+                if (docType === "CCS výpis" && jobs.length)
+                  toast(
+                    jobs[0].state === "failed"
+                      ? jobs[0].error || "Výpis se nepodařilo přečíst."
+                      : [
+                          jobs[0].message,
+                          jobs[0].state === "incomplete" &&
+                            "Výpis je neúplný, podrobnosti jsou v detailu výpisu.",
+                        ]
+                          .filter(Boolean)
+                          .join(" ") || "Výpis uložen.",
+                  );
                 if (docType === "Účtenka" && jobs.length)
                   toast(
                     jobs.find((j) => j.error)?.error ||

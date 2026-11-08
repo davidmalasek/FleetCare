@@ -33,6 +33,7 @@ import {
   meta,
   roles,
   type Actor,
+  type Document,
   type Workspace,
 } from "../src/domain/models";
 import { commandSchema } from "../src/data/command-schema";
@@ -45,6 +46,9 @@ import {
   type ReceiptExtraction,
 } from "../src/domain/receipt-extract";
 import { readReceipt } from "./receipt-reader";
+import { readCcs } from "./ccs-reader";
+import type { CcsExtraction } from "../src/domain/ccs-extract";
+import { importCcsStatement } from "../src/domain/ccs";
 import { normalize } from "../src/lib/format";
 
 const env = process.env;
@@ -249,7 +253,8 @@ function addDocument(
   storageKey: string,
   stk?: StkExtraction,
   receipt?: ReceiptExtraction,
-) {
+  ccs?: CcsExtraction,
+): { doc: Document; duplicate: boolean; message?: string } {
   const { input, file, stored } = session;
   const scope = scopedWorkspace(s, actor);
   const owners: Record<string, boolean> = {
@@ -290,14 +295,22 @@ function addDocument(
   if (duplicate) {
     // The same file uploaded again: a document stored before reading existed
     // gets the reading now instead of keeping "Služba není připojena".
-    const reading = stk || receipt;
-    if (reading && duplicate.extraction === "not_configured")
+    const reading = stk || receipt || ccs;
+    if (reading && duplicate.extraction === "not_configured") {
       Object.assign(duplicate, {
         extraction: reading.state,
-        error: reading.error,
+        error: reading.error || "",
         updatedAt: new Date().toISOString(),
         version: duplicate.version + 1,
       });
+      // A statement uploaded before reading existed gets its transactions.
+      if (ccs && s.statements.some((x) => x.id === duplicate.ownerId))
+        return {
+          doc: duplicate,
+          duplicate: true,
+          message: importCcsStatement(s, duplicate.ownerId, ccs).message,
+        };
+    }
     return { doc: duplicate, duplicate: true };
   }
   let ownerId = input.ownerId;
@@ -316,6 +329,10 @@ function addDocument(
     s.statements.push(statement);
     ownerId = statement.id;
   }
+  const message =
+    ccs && input.ownerType === "statement"
+      ? importCcsStatement(s, ownerId, ccs).message
+      : undefined;
   const m = meta(storageKey);
   const doc = documentSchema.parse({
     ...m,
@@ -337,17 +354,19 @@ function addDocument(
       ? stk.state
       : receipt
         ? receipt.state
-        : [
-              "Pracovní smlouva",
-              "Příloha",
-              "Dodací list",
-              "Servisní doklad",
-              "Pojištění",
-            ].includes(input.type)
-          ? "not_required"
-          : "not_configured",
+        : ccs
+          ? ccs.state
+          : [
+                "Pracovní smlouva",
+                "Příloha",
+                "Dodací list",
+                "Servisní doklad",
+                "Pojištění",
+              ].includes(input.type)
+            ? "not_required"
+            : "not_configured",
     jobId: null,
-    error: stk?.error || receipt?.error || "",
+    error: stk?.error || receipt?.error || ccs?.error || "",
     deletedAt: null,
   });
   // STK for an existing vehicle: check it is the same car, then move the STK
@@ -399,7 +418,7 @@ function addDocument(
     }
   }
   s.documents.push(doc);
-  return { doc, duplicate: false };
+  return { doc, duplicate: false, message };
 }
 
 // ---------- search ----------
@@ -669,8 +688,25 @@ const server = createServer(async (req, res) => {
               session.file.mime,
             )
           : undefined;
-      const { doc, duplicate } = await mutate((next) =>
-        addDocument(next, session.actor, session, storageKey, stk, receipt),
+      const ccs =
+        session.input.type === "CCS výpis"
+          ? await readCcs(
+              await readFile(session.stored!.path).then(
+                (b) => new Uint8Array(b),
+                () => new Uint8Array(),
+              ),
+            )
+          : undefined;
+      const { doc, duplicate, message } = await mutate((next) =>
+        addDocument(
+          next,
+          session.actor,
+          session,
+          storageKey,
+          stk,
+          receipt,
+          ccs,
+        ),
       );
       if (duplicate) await rm(session.stored!.path, { force: true });
       else await rename(session.stored!.path, join(filesDir, storageKey));
@@ -690,13 +726,24 @@ const server = createServer(async (req, res) => {
                 missingFields: receipt.missingFields,
                 error: doc.error || undefined,
               }
-            : {
-                jobId: doc.id,
-                state:
-                  doc.extraction === "not_required" || duplicate
-                    ? "completed"
-                    : "not_configured",
-              };
+            : ccs
+              ? {
+                  jobId: doc.id,
+                  state: doc.extraction as JobStatus["state"],
+                  error: doc.error || undefined,
+                  message:
+                    message ||
+                    (duplicate
+                      ? "Tento výpis už byl nahrán, transakce se znovu nezakládají."
+                      : undefined),
+                }
+              : {
+                  jobId: doc.id,
+                  state:
+                    doc.extraction === "not_required" || duplicate
+                      ? "completed"
+                      : "not_configured",
+                };
       jobs.set(doc.id, session.result);
       return json(res, 200, session.result);
     }
