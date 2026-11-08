@@ -12,7 +12,7 @@ import {
 } from "node:http";
 import { createHash, randomUUID } from "node:crypto";
 import { createWriteStream } from "node:fs";
-import { mkdir, readFile, rename, rm } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { ZodError } from "zod";
 import { matchAccount } from "./account-auth.mjs";
@@ -50,6 +50,7 @@ import { readCcs } from "./ccs-reader";
 import type { CcsExtraction } from "../src/domain/ccs-extract";
 import { importCcsStatement } from "../src/domain/ccs";
 import { normalize } from "../src/lib/format";
+import { a5Items } from "../src/domain/automation";
 
 const env = process.env;
 const port = Number(env.PORT || 8787);
@@ -131,12 +132,6 @@ async function mutate<T>(
 // ---------- e-mail through the Make webhook ----------
 const escapeHtml = (v: string) =>
   v.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
-const mailCommands = new Set([
-  "fault.notify",
-  "trip.notify",
-  "notification.retry",
-  "notification.recipient",
-]);
 async function deliverNotifications(
   before: Workspace,
   after: Workspace,
@@ -545,6 +540,40 @@ const server = createServer(async (req, res) => {
       if (!actor) fail(401, "E-mail nebo heslo není správné.");
       return json(res, 200, actor);
     }
+    if (req.method === "POST" && path === "/v1/automation/a5") {
+      // Daily Make run (M2, branch A5): deadlines due within 30 days or
+      // overdue. Each deadline and warning level is handed over once, so a
+      // repeated run costs no Make operations; ?preview=1 claims nothing.
+      const actor = actorOf(req)!;
+      if (actor.role !== "Fleet manažer")
+        fail(403, "Termíny pro upozornění jsou jen pro fleet manažera.");
+      const input = ((await body(req).catch(() => ({}))) || {}) as {
+        run_id?: string;
+      };
+      const preview = /[?&]preview=1\b/.test(req.url || "");
+      const { workspace } = await snapshot();
+      const file = join(dataDir, "a5-claims.json");
+      const claims = JSON.parse(
+        await readFile(file, "utf8").catch(() => "{}"),
+      ) as Record<string, string>;
+      const items = a5Items(workspace).filter(
+        (i) => !claims[`${i.item_key}:${i.level}`],
+      );
+      if (!preview && items.length) {
+        const now = new Date().toISOString();
+        for (const i of items) claims[`${i.item_key}:${i.level}`] = now;
+        await mkdir(dataDir, { recursive: true });
+        await writeFile(`${file}.tmp`, JSON.stringify(claims, null, 1));
+        await rename(`${file}.tmp`, file);
+      }
+      return json(res, 200, {
+        ok: true,
+        request_id: `req_a5_${String(input.run_id || Date.now()).replace(/[^\w-]/g, "")}`,
+        status: "ok",
+        data: { items },
+        errors: [],
+      });
+    }
     if (req.method === "GET" && path === "/v1/workspace") {
       const actor = actorOf(req, false);
       const { workspace } = await snapshot();
@@ -593,8 +622,9 @@ const server = createServer(async (req, res) => {
       }
       await mutate(async (next, snap) => {
         applyCommand(next, actor, command);
-        if (mailCommands.has(command.type))
-          await deliverNotifications(snap.workspace, next, snap.settings);
+        // Any command may queue e-mails (a new fault queues three); only
+        // notifications created or changed by this command are sent.
+        await deliverNotifications(snap.workspace, next, snap.settings);
       });
       processed.set(key as string, {
         hash,
