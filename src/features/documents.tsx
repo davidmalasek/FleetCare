@@ -112,6 +112,10 @@ export function UploadDialog({
                           .filter(Boolean)
                           .join(" ") || "Výpis uložen.",
                   );
+                if (docType === "Řidičský průkaz")
+                  toast(
+                    "Řidičský průkaz uložen. Skupiny a platnosti doplňte v profilu řidiče (Upravit profil).",
+                  );
                 if (docType === "Účtenka" && jobs.length)
                   toast(
                     jobs.find((j) => j.error)?.error ||
@@ -211,6 +215,15 @@ export function useUpload() {
       />,
     );
 }
+/**
+ * A driving licence is a photo or scan; its groups and validity are entered
+ * in the driver profile (the brief allows manual entry), so the document says
+ * that instead of "Služba není připojena".
+ */
+export const extractionShown = (d: Pick<Document, "type" | "extraction">) =>
+  d.type === "Řidičský průkaz" && d.extraction === "not_configured"
+    ? "manual_entry"
+    : d.extraction;
 export function DocumentLink(props: React.ComponentProps<typeof Link>) {
   const location = useLocation();
   return (
@@ -338,7 +351,7 @@ export function DocumentList({
               <>
                 <StatusChip entity="file" value={d.fileState} />
                 <small>
-                  <StatusChip entity="processing" value={d.extraction} />
+                  <StatusChip entity="processing" value={extractionShown(d)} />
                 </small>
               </>
             ),
@@ -569,7 +582,7 @@ export function DocumentPage() {
               ["Stav", <StatusChip entity="file" value={doc.fileState} />],
               [
                 "Stav zpracování",
-                <StatusChip entity="processing" value={doc.extraction} />,
+                <StatusChip entity="processing" value={extractionShown(doc)} />,
               ],
             ]}
           />
