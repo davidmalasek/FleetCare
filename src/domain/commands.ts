@@ -809,7 +809,7 @@ export function applyCommand(
     }
   }
 }
-function nextOrderNumber(s: Workspace) {
+export function nextOrderNumber(s: Workspace) {
   const year = new Date().getFullYear();
   const prefix = `ZK-${year}-`;
   const used = s.orders

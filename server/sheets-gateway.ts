@@ -51,6 +51,8 @@ import type { CcsExtraction } from "../src/domain/ccs-extract";
 import { importCcsStatement } from "../src/domain/ccs";
 import { normalize } from "../src/lib/format";
 import { a5Items } from "../src/domain/automation";
+import { readOrder } from "./order-reader";
+import { createOrderFromMail } from "../src/domain/order-intake";
 
 const env = process.env;
 const port = Number(env.PORT || 8787);
@@ -539,6 +541,119 @@ const server = createServer(async (req, res) => {
       const actor = matchAccount(accounts, email, password);
       if (!actor) fail(401, "E-mail nebo heslo není správné.");
       return json(res, 200, actor);
+    }
+    if (req.method === "POST" && path === "/v1/intake/mail") {
+      // E-mail intake from Make (M2): an order (FC-D08) becomes an order with
+      // the PDF attached, a CCS statement (FC-D17) goes through the same
+      // reading and pairing as Import CCS PDF. The same file twice is stored once.
+      const actor = actorOf(req)!;
+      if (actor.role !== "Fleet manažer")
+        fail(403, "Příjem e-mailů je jen pro automatizaci fleet manažera.");
+      const input = (await body(req, 9 * 1024 * 1024)) as {
+        run_id?: string;
+        payload?: {
+          document_type?: string;
+          attachment_name?: string;
+          message_id?: string;
+          data_base64?: string;
+        };
+      };
+      const p = input.payload || {};
+      const type =
+        p.document_type === "FC-D17"
+          ? ("CCS výpis" as const)
+          : p.document_type === "FC-D08"
+            ? ("Objednávka" as const)
+            : fail(422, "Neznámý typ přílohy, čekám FC-D08 nebo FC-D17.");
+      const data = Buffer.from(String(p.data_base64 || ""), "base64");
+      if (!data.length)
+        fail(422, "Příloha e-mailu je prázdná (chybí data_base64).");
+      if (data.length > fileLimits.extractionBytes)
+        fail(413, "Příloha e-mailu překračuje 5 MB.");
+      const name = String(p.attachment_name || "priloha.pdf")
+        .replace(/[\\/\x00-\x1F]/g, "_")
+        .slice(0, 200);
+      const hash = createHash("sha256").update(data).digest("hex");
+      await mkdir(filesDir, { recursive: true });
+      const tmp = join(filesDir, `${randomUUID()}.upload`);
+      await writeFile(tmp, data);
+      const bytes = new Uint8Array(data);
+      const ccs = type === "CCS výpis" ? await readCcs(bytes) : undefined;
+      const order = type === "Objednávka" ? await readOrder(bytes) : undefined;
+      const storageKey = randomUUID();
+      const session: UploadSession = {
+        actor,
+        input: {
+          ownerType: ccs ? "statement" : "order",
+          ownerId: "",
+          type,
+          files: [],
+          idempotencyKey: `mail:${p.message_id || ""}:${name}`,
+        },
+        file: { name, mime: "application/pdf", size: data.length },
+        stored: { path: tmp, hash, size: data.length },
+      };
+      const result = await mutate((next) => {
+        if (order) {
+          const known = next.documents.find(
+            (d) =>
+              !d.deletedAt &&
+              d.hash === hash &&
+              d.type === "Objednávka" &&
+              d.ownerType === "order",
+          );
+          if (known) return { doc: known, duplicate: true, message: "" };
+          const created = createOrderFromMail(next, order, {
+            fileName: name,
+            receivedAt: new Date().toISOString(),
+          });
+          session.input.ownerId = created.id;
+          const added = addDocument(next, actor, session, storageKey);
+          Object.assign(added.doc, {
+            source: "import",
+            extraction: order.state,
+            error:
+              order.error ||
+              (order.missingFields.length
+                ? `Chybí: ${order.missingFields.join(", ")}.`
+                : ""),
+          });
+          return {
+            ...added,
+            message: `Zakázka ${created.number} (${created.state}).`,
+          };
+        }
+        const added = addDocument(
+          next,
+          actor,
+          session,
+          storageKey,
+          undefined,
+          undefined,
+          ccs,
+        );
+        if (!added.duplicate) added.doc.source = "import";
+        return { ...added, message: added.message || "" };
+      });
+      if (result.duplicate) await rm(tmp, { force: true });
+      else await rename(tmp, join(filesDir, storageKey));
+      return json(res, 200, {
+        ok: true,
+        request_id: `req_mail_${String(input.run_id || Date.now()).replace(/[^\w-]/g, "")}`,
+        status: "ok",
+        data: {
+          document_id: result.doc.id,
+          owner_type: result.doc.ownerType,
+          owner_id: result.doc.ownerId,
+          duplicate: result.duplicate,
+          state: result.doc.extraction,
+          message: result.duplicate
+            ? "Příloha už byla přijata, nic nového nevzniklo."
+            : result.message,
+          error: result.doc.error || undefined,
+        },
+        errors: [],
+      });
     }
     if (req.method === "POST" && path === "/v1/automation/a5") {
       // Daily Make run (M2, branch A5): deadlines due within 30 days or
