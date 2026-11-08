@@ -57,7 +57,9 @@ export function receiptPrefill(s: Workspace, actor: Actor, read: ReceiptRead) {
     found.push(`vozidlo ${vehicle.spz}`);
   } else if (f.spz || f.vin)
     todo.push(
-      `Vozidlo ${f.spz || f.vin} z účtenky není v evidenci, vyberte ho.`,
+      actor.role === "Řidič"
+        ? `Vozidlo ${f.spz || f.vin} z účtenky nemáte přidělené, vyberte vozidlo, se kterým jste tankovali.`
+        : `Vozidlo ${f.spz || f.vin} z účtenky není v evidenci, vyberte ho.`,
     );
   if (actor.role !== "Řidič" && f.driverName) {
     const driver = s.drivers.find(

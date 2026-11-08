@@ -256,6 +256,12 @@ describe("fuel form filled from a receipt", () => {
     expect(p.values.vehicleId).toBeUndefined();
     expect(p.values.driverId).toBeUndefined();
     expect(p.values.cardId).toBeUndefined();
+    expect(p.notice).toContain("Vozidlo 9AZ 9001 z účtenky nemáte přidělené");
+  });
+
+  it("tells a manager that the receipt's vehicle is not in the records", () => {
+    const p = receiptPrefill(fixture(), manager, read());
+    expect(p.values.vehicleId).toBeUndefined();
     expect(p.notice).toContain("Vozidlo 9AZ 9001 z účtenky není v evidenci");
   });
 
