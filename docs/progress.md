@@ -1,5 +1,10 @@
 # FleetCare — stav předání
 
+## 2026-11-08 — Zakázky řidiče při zahájení jízdy
+
+- Při zahájení jízdy se řidiči v nabídce zakázek zobrazí pouze jeho zakázky ve stavu „Přiřazená“. Ostatní formuláře a role mají nabídku beze změny.
+- Ověření: typecheck, lint, produkční build a 81 testů (mimo HTTP testy vyžadující localhost) prošly. Nové testy pokrývají filtrování podle stavu i řidiče a zachování nabídky pro ostatní role/formuláře. Ruční UI kontrola nebyla provedena.
+
 ## 2026-11-08 — Úprava konce neúplné jízdy řidičem
 
 - U neúplné jízdy může řidič upravit konečné datum i koncový tachometr. Ostatní pole zůstávají uzamčená; konečné datum je při úpravě povinné.
