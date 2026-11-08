@@ -1,5 +1,10 @@
 # FleetCare — stav předání
 
+## 2026-11-08 — Výchozí stav tankování z nahrané účtenky
+
+- Tankování založené formulářem „Nahrát tankovací účtenku“ nově začíná ve stavu „Čeká na výpis“.
+- Ověření: typecheck, lint, produkční build a 81 testů (mimo HTTP testy vyžadující localhost) prošly. Build má stávající upozornění na velké JS chunky.
+
 ## 2026-11-08 — Zakázky řidiče při zahájení jízdy
 
 - Při zahájení jízdy se řidiči v nabídce zakázek zobrazí pouze jeho zakázky ve stavu „Přiřazená“. Ostatní formuláře a role mají nabídku beze změny.
